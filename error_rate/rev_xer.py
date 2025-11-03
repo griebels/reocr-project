@@ -18,6 +18,8 @@ import evaluate
 
 import argparse
 import logging
+import re, unicodedata
+
 
 
 logging.basicConfig(
@@ -97,6 +99,30 @@ def test_other_metrics(ref: str, hyp: str):
     }
 
 
+# cleaning code:
+
+def normalize_text(text):
+    # fix unicode (quotes, dashes, ligatures, etc.)
+    text = unicodedata.normalize("NFKC", text)
+
+    # remove weird OCR chars
+    text = re.sub(r'[@^~•·§¤]', '', text)
+
+    # collapse whitespace
+    text = re.sub(r'\s+', ' ', text)
+
+    # remove space before punctuation
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
+
+    # remove linebreak hypphens and join words
+    text = re.sub(r'-\s*\n\s*', '', text)
+
+    # lowercase for fair comparison
+    text = text.lower()
+
+    return text.strip()
+
+
 
 
 
@@ -114,6 +140,9 @@ def main():
     wer_s, wer_i, wer_d, wer_n = 0, 0, 0, 0
     cer_s, cer_i, cer_d, cer_n = 0, 0, 0, 0
     sen_err = 0
+
+    htxt = normalize_text(htxt)
+    gtxt = normalize_text(gtxt)
     
     # update CER statistics
     _, (s, i, d) = levenshtein(gtxt, htxt)
