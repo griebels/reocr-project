@@ -143,6 +143,10 @@ def main():
 
     htxt = normalize_text(htxt)
     gtxt = normalize_text(gtxt)
+
+    print("htxt", htxt)
+    print("gtxt", gtxt)
+
     
     # update CER statistics
     _, (s, i, d) = levenshtein(gtxt, htxt)
