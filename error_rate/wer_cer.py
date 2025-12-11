@@ -56,14 +56,40 @@ def safe_div(num, den):
     return float('nan') if den == 0 else num / den
 
 
+# ---------- NEW: light “original-style” normalization (no lowercasing) ----------
+def normalize_for_original_metrics(s: str) -> str:
+    # 1. flatten line breaks
+    s = s.replace('\r', ' ').replace('\n', ' ')
+    # 2. collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    # 3. strip outer quotes
+    s = s.strip('"').strip("'")
+    # 4. drop trailing page-artifact tokens: bare roman numerals or digits
+    tokens = s.split()
+    tokens = [t for t in tokens if t != '—']
+    tokens = [t for t in tokens if t != '-']
+    while tokens:
+        core = re.sub(r'^\W+|\W+$', '', tokens[-1])  # trim punctuation
+        if re.fullmatch(r'[ivxlcdm]+|\d+', core, flags=re.IGNORECASE):
+            tokens.pop()
+        else:
+            break
+    return ' '.join(tokens)
+# ------------------------------------------------------------------------------
+
+
 def normalize_text(text):
+    """
+    Heavier normalization for *_norm metrics.
+    This one DOES lowercase.
+    """
     # fix unicode (quotes, dashes, ligatures, etc.)
     text = unicodedata.normalize("NFKC", text)
 
     # remove weird OCR chars
     text = re.sub(r'[@^~•·§¤]', '', text)
 
-    # collapse whitespace
+    # collapse all whitespace (including newlines)
     text = re.sub(r'\s+', ' ', text)
 
     # remove space before punctuation
@@ -80,15 +106,15 @@ def normalize_text(text):
 
 def compute_metrics_for_pair(ref, hyp):
     """
-    Compute CER/WER for raw ref/hyp strings.
-    CER uses distance / len(ref).
-    WER uses (S+I+D) / len(ref_words).
+    Compute CER/WER for a single ref/hyp pair.
+
+    CER: distance / len(ref)
+    WER: (S + I + D) / len(ref_words)
     """
     ref = ref or ""
     hyp = hyp or ""
 
     char_dist, (s_c, i_c, d_c) = levenshtein_with_ops(ref, hyp)
-
     denom_chars = len(ref)
     cer = safe_div(char_dist, denom_chars)
 
@@ -102,13 +128,16 @@ def compute_metrics_for_pair(ref, hyp):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute CER/WER per row for a CSV of gsent/hsent.'
+        description=(
+            "Compute CER/WER per row for a CSV with target_gsent, "
+            "target_hsent, and matched_hsent."
+        )
     )
     parser.add_argument(
         '-i', '--input_csv',
         type=str,
         required=True,
-        help='Path to input CSV with columns gsent and hsent'
+        help='Path to input CSV with columns target_gsent, target_hsent, matched_hsent'
     )
     parser.add_argument(
         '-o', '--output_csv',
@@ -118,43 +147,97 @@ def main():
     )
     args = parser.parse_args()
 
-    df = pd.read_csv(args.input_csv)
+    df = pd.read_csv(args.input_csv, on_bad_lines="skip", engine="python")
 
-    cer_raw_list = []
-    wer_raw_list = []
-    cer_norm_list = []
-    wer_norm_list = []
+    required_cols = ['target_gsent', 'target_hsent', 'matched_hsent']
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Required column '{col}' not found in input CSV.")
+
+    cer_gh_list = []       # gold vs hathi (original-style)
+    wer_gh_list = []
+    cer_gh_norm_list = []
+    wer_gh_norm_list = []
+
+    cer_gm_list = []       # gold vs matched
+    wer_gm_list = []
+    cer_gm_norm_list = []
+    wer_gm_norm_list = []
+
+    cer_hm_list = []       # hathi vs matched
+    wer_hm_list = []
+    cer_hm_norm_list = []
+    wer_hm_norm_list = []
 
     for idx, row in df.iterrows():
-        gsent = str(row.get('gsent', '') or '')
-        hsent = str(row.get('hsent', '') or '')
+        gsent = str(row.get('target_gsent', '') or '')
+        hsent = str(row.get('target_hsent', '') or '')
+        msent = str(row.get('matched_hsent', '') or '')
 
-        cer_raw, wer_raw = compute_metrics_for_pair(gsent, hsent)
+        # ---------- NEW: original-style normalization for main metrics ----------
+        g_orig = normalize_for_original_metrics(gsent)
+        h_orig = normalize_for_original_metrics(hsent)
+        m_orig = normalize_for_original_metrics(msent)
+        # -----------------------------------------------------------------------
 
+        # --- 1. Gold vs Hathi (original-style, no lowercasing, just flattening) ---
+        cer_gh, wer_gh = compute_metrics_for_pair(g_orig, h_orig)
+        cer_gh_list.append(cer_gh)
+        wer_gh_list.append(wer_gh)
+
+        # --- 1b. Gold vs Hathi with heavier normalization (your *_norm) ---
         gsent_norm = normalize_text(gsent)
         hsent_norm = normalize_text(hsent)
-        cer_norm, wer_norm = compute_metrics_for_pair(gsent_norm, hsent_norm)
+        cer_gh_norm, wer_gh_norm = compute_metrics_for_pair(gsent_norm, hsent_norm)
+        cer_gh_norm_list.append(cer_gh_norm)
+        wer_gh_norm_list.append(wer_gh_norm)
 
-        cer_raw_list.append(cer_raw)
-        wer_raw_list.append(wer_raw)
-        cer_norm_list.append(cer_norm)
-        wer_norm_list.append(wer_norm)
+        # --- 2. Gold vs Matched (should replicate original cer/wer columns) ---
+        cer_gm, wer_gm = compute_metrics_for_pair(g_orig, m_orig)
+        cer_gm_list.append(cer_gm)
+        wer_gm_list.append(wer_gm)
 
-    df['cer_new_text'] = cer_raw_list
-    df['wer_new_text'] = wer_raw_list
-    df['cer_normalized_text'] = cer_norm_list
-    df['wer_normalized_text'] = wer_norm_list
+        msent_norm = normalize_text(msent)
+        cer_gm_norm, wer_gm_norm = compute_metrics_for_pair(gsent_norm, msent_norm)
+        cer_gm_norm_list.append(cer_gm_norm)
+        wer_gm_norm_list.append(wer_gm_norm)
 
+        # --- 3. Hathi vs Matched ---
+        cer_hm, wer_hm = compute_metrics_for_pair(h_orig, m_orig)
+        cer_hm_list.append(cer_hm)
+        wer_hm_list.append(wer_hm)
 
+        hsent_norm = normalize_text(hsent)  # recompute or reuse above
+        cer_hm_norm, wer_hm_norm = compute_metrics_for_pair(hsent_norm, msent_norm)
+        cer_hm_norm_list.append(cer_hm_norm)
+        wer_hm_norm_list.append(wer_hm_norm)
+
+    # 1) gold vs Hathi
+    df['cer_gh'] = cer_gh_list
+    df['wer_gh'] = wer_gh_list
+    df['cer_gh_norm'] = cer_gh_norm_list
+    df['wer_gh_norm'] = wer_gh_norm_list
+
+    # 2) gold vs matched
+    df['cer_gm'] = cer_gm_list
+    df['wer_gm'] = wer_gm_list
+    df['cer_gm_norm'] = cer_gm_norm_list
+    df['wer_gm_norm'] = wer_gm_norm_list
+
+    # 3) hathi vs matched
+    df['cer_hm'] = cer_hm_list
+    df['wer_hm'] = wer_hm_list
+    df['cer_hm_norm'] = cer_hm_norm_list
+    df['wer_hm_norm'] = wer_hm_norm_list
+
+    # Compare to existing original cer/wer columns (which are g vs matched)
     if 'cer' in df.columns:
-        df['cer_delta_new'] = df['cer_new_text'] - df['cer']
-        df['cer_delta_norm'] = df['cer_normalized_text'] - df['cer']
+        df['cer_diff_from_orig'] = df['cer_gh'] - df['cer']
     else:
         logging.warning("Original 'cer' column not found in input CSV.")
 
     if 'wer' in df.columns:
-        df['wer_delta_new'] = df['wer_new_text'] - df['wer']
-        df['wer_delta_norm'] = df['wer_normalized_text'] - df['wer']
+        df['wer_diff_from_orig'] = df['wer_gh'] - df['wer']
     else:
         logging.warning("Original 'wer' column not found in input CSV.")
 

@@ -103,10 +103,10 @@ def test_other_metrics(ref: str, hyp: str):
 
 def normalize_text(text):
     # fix unicode (quotes, dashes, ligatures, etc.)
-    text = unicodedata.normalize("NFKC", text)
+    # text = unicodedata.normalize("NFKC", text)
 
     # remove weird OCR chars
-    text = re.sub(r'[@^~•·§¤]', '', text)
+    # text = re.sub(r'[@^~•·§¤]', '', text)
 
     # collapse whitespace
     text = re.sub(r'\s+', ' ', text)
@@ -118,12 +118,35 @@ def normalize_text(text):
     text = re.sub(r'-\s*\n\s*', '', text)
 
     # lowercase for fair comparison
-    text = text.lower()
+    # text = text.lower()
 
-    return text.strip()
+    return text
 
 
 
+
+def normalize_for_original_metrics(s: str) -> str:
+    # 1) Flatten line breaks and carriage returns to spaces
+    s = s.replace('\r', ' ').replace('\n', ' ')
+    
+    # 2) Collapse multiple spaces
+    s = re.sub(r'\s+', ' ', s).strip()
+    
+    # 3) Strip leading/trailing quotes if present
+    #    (handles cases like "Sentence ..." or 'Sentence ...')
+    s = s.strip('"').strip("'")
+    
+    # 4) Drop trailing page-artifact tokens: bare digits or roman numerals
+    tokens = s.split()
+    while tokens:
+        # remove surrounding punctuation from the last token, e.g. "1," -> "1"
+        core = re.sub(r'^\W+|\W+$', '', tokens[-1])
+        if re.fullmatch(r'[ivxlcdm]+|\d+', core, flags=re.IGNORECASE):
+            tokens.pop()
+        else:
+            break
+    
+    return ' '.join(tokens)
 
 
 
@@ -141,8 +164,12 @@ def main():
     cer_s, cer_i, cer_d, cer_n = 0, 0, 0, 0
     sen_err = 0
 
-    htxt = normalize_text(htxt)
-    gtxt = normalize_text(gtxt)
+    # htxt = normalize_text(htxt)
+    # gtxt = normalize_text(gtxt)
+
+    htxt = normalize_for_original_metrics(htxt)
+    gtxt = normalize_for_original_metrics(gtxt)
+
 
     print("htxt", htxt)
     print("gtxt", gtxt)
