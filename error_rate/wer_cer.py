@@ -56,52 +56,54 @@ def safe_div(num, den):
     return float('nan') if den == 0 else num / den
 
 
-# ---------- NEW: light “original-style” normalization (no lowercasing) ----------
+def normalize_light(s: str) -> str:
+    if not isinstance(s, str):
+        s = "" if s is None else str(s)
+
+    # replace newlines with space
+    s = s.replace("\n", " ").replace("\r", " ")
+
+    # replace double hyphens first
+    s = s.replace("--", "")
+
+    # replace single hyphens
+    s = s.replace("-", "")
+
+    # collapse multiple spaces
+    s = re.sub(r"\s+", "", s).strip()
+
+    return s
+
+
 def normalize_for_original_metrics(s: str) -> str:
-    # 1. flatten line breaks
-    s = s.replace('\r', ' ').replace('\n', ' ')
-    # 2. collapse whitespace
-    s = re.sub(r'\s+', ' ', s).strip()
-    # 3. strip outer quotes
-    s = s.strip('"').strip("'")
-    # 4. drop trailing page-artifact tokens: bare roman numerals or digits
-    tokens = s.split()
-    tokens = [t for t in tokens if t != '—']
-    tokens = [t for t in tokens if t != '-']
-    while tokens:
-        core = re.sub(r'^\W+|\W+$', '', tokens[-1])  # trim punctuation
-        if re.fullmatch(r'[ivxlcdm]+|\d+', core, flags=re.IGNORECASE):
-            tokens.pop()
-        else:
-            break
-    return ' '.join(tokens)
-# ------------------------------------------------------------------------------
+    """
+    Original-style normalization for main metrics, but now *light*:
+    just flatten line breaks and hyphens as requested.
+    """
+    return normalize_light(s)
 
 
-def normalize_text(text):
+def normalize_text(text: str) -> str:
     """
-    Heavier normalization for *_norm metrics.
-    This one DOES lowercase.
+    Heavier normalization for *_norm metrics, but still "light" in spirit:
+    - NFKC unicode normalization
+    - same light cleanup as above
+    - lowercase
     """
-    # fix unicode (quotes, dashes, ligatures, etc.)
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+
+    # unicode normalization (quotes, dashes, ligatures, etc.)
     text = unicodedata.normalize("NFKC", text)
 
-    # remove weird OCR chars
-    text = re.sub(r'[@^~•·§¤]', '', text)
+    # apply the same light cleanup (newlines + hyphens)
+    text = normalize_light(text)
 
-    # collapse all whitespace (including newlines)
-    text = re.sub(r'\s+', ' ', text)
-
-    # remove space before punctuation
-    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
-
-    # remove linebreak hyphens and join words
-    text = re.sub(r'-\s*\n\s*', '', text)
-
-    # lowercase for fair comparison
+    # lowercase for *_norm metrics
     text = text.lower()
 
     return text.strip()
+# --------------------------------------------------------------------
 
 
 def compute_metrics_for_pair(ref, hyp):
@@ -149,22 +151,25 @@ def main():
 
     df = pd.read_csv(args.input_csv, on_bad_lines="skip", engine="python")
 
-    required_cols = ['target_gsent', 'target_hsent', 'matched_hsent']
+    required_cols = ['target_gsent', 'target_hsent']
     for col in required_cols:
         if col not in df.columns:
             raise ValueError(f"Required column '{col}' not found in input CSV.")
 
-    cer_gh_list = []       # gold vs hathi (original-style)
+    if 'matched_hsent' not in df.columns and 'matched_honed_original' not in df.columns:
+        raise ValueError("Need at least one of 'matched_hsent' or 'matched_honed_original' in input CSV.")
+
+    cer_gh_list = []      
     wer_gh_list = []
     cer_gh_norm_list = []
     wer_gh_norm_list = []
 
-    cer_gm_list = []       # gold vs matched
+    cer_gm_list = []       
     wer_gm_list = []
     cer_gm_norm_list = []
     wer_gm_norm_list = []
 
-    cer_hm_list = []       # hathi vs matched
+    cer_hm_list = []     
     wer_hm_list = []
     cer_hm_norm_list = []
     wer_hm_norm_list = []
@@ -172,27 +177,31 @@ def main():
     for idx, row in df.iterrows():
         gsent = str(row.get('target_gsent', '') or '')
         hsent = str(row.get('target_hsent', '') or '')
-        msent = str(row.get('matched_hsent', '') or '')
 
-        # ---------- NEW: original-style normalization for main metrics ----------
+        m_raw = row.get('matched_hsent', '')
+        if not isinstance(m_raw, str):
+            m_raw = "" if m_raw is None else str(m_raw)
+        if not m_raw.strip():  
+            m_raw = row.get('matched_honed_original', '')
+            if not isinstance(m_raw, str):
+                m_raw = "" if m_raw is None else str(m_raw)
+
+        msent = m_raw
+
         g_orig = normalize_for_original_metrics(gsent)
         h_orig = normalize_for_original_metrics(hsent)
         m_orig = normalize_for_original_metrics(msent)
-        # -----------------------------------------------------------------------
 
-        # --- 1. Gold vs Hathi (original-style, no lowercasing, just flattening) ---
         cer_gh, wer_gh = compute_metrics_for_pair(g_orig, h_orig)
         cer_gh_list.append(cer_gh)
         wer_gh_list.append(wer_gh)
 
-        # --- 1b. Gold vs Hathi with heavier normalization (your *_norm) ---
         gsent_norm = normalize_text(gsent)
         hsent_norm = normalize_text(hsent)
         cer_gh_norm, wer_gh_norm = compute_metrics_for_pair(gsent_norm, hsent_norm)
         cer_gh_norm_list.append(cer_gh_norm)
         wer_gh_norm_list.append(wer_gh_norm)
 
-        # --- 2. Gold vs Matched (should replicate original cer/wer columns) ---
         cer_gm, wer_gm = compute_metrics_for_pair(g_orig, m_orig)
         cer_gm_list.append(cer_gm)
         wer_gm_list.append(wer_gm)
@@ -202,12 +211,11 @@ def main():
         cer_gm_norm_list.append(cer_gm_norm)
         wer_gm_norm_list.append(wer_gm_norm)
 
-        # --- 3. Hathi vs Matched ---
         cer_hm, wer_hm = compute_metrics_for_pair(h_orig, m_orig)
         cer_hm_list.append(cer_hm)
         wer_hm_list.append(wer_hm)
 
-        hsent_norm = normalize_text(hsent)  # recompute or reuse above
+        hsent_norm = normalize_text(hsent) 
         cer_hm_norm, wer_hm_norm = compute_metrics_for_pair(hsent_norm, msent_norm)
         cer_hm_norm_list.append(cer_hm_norm)
         wer_hm_norm_list.append(wer_hm_norm)
@@ -230,7 +238,6 @@ def main():
     df['cer_hm_norm'] = cer_hm_norm_list
     df['wer_hm_norm'] = wer_hm_norm_list
 
-    # Compare to existing original cer/wer columns (which are g vs matched)
     if 'cer' in df.columns:
         df['cer_diff_from_orig'] = df['cer_gh'] - df['cer']
     else:
