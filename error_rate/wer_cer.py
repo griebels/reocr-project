@@ -70,7 +70,7 @@ def normalize_light(s: str) -> str:
     s = s.replace("-", "")
 
     # collapse multiple spaces
-    s = re.sub(r"\s+", "", s).strip()
+    s = re.sub(r"\s+", " ", s).strip()
 
     return s
 

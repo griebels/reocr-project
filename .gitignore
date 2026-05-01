@@ -1,1 +1,9 @@
 venv/
+data/
+figures/
+_cache
+__pycache__
+not_for_pub/
+CHANGELOG.md
+.DS_Store
+error_rate/found_in_january_run_improved_ALL.csv
